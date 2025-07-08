@@ -1,21 +1,20 @@
 # -*- coding: utf-8 -*-
-import gradio as gr
+import streamlit as st
 from sentence_transformers import SentenceTransformer
 import chromadb
+from langchain_huggingface import HuggingFacePipeline
+from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, pipeline
 
 # Initialize models and client
 embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
 client = chromadb.PersistentClient(path="data/embeddings/")
 collection = client.get_collection(name="complaint_embeddings")
 
-# Check collection data
 print(f"Collection count: {collection.count()}")
 if collection.count() == 0:
     print("Warning: ChromaDB collection is empty. Please populate it with data.")
 
 try:
-    from langchain_huggingface import HuggingFacePipeline
-    from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, pipeline
     model_name = "google/flan-t5-large"
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
@@ -46,7 +45,7 @@ def retrieve_chunks(query, product_filter=None, k=3):
     else:
         print("No product filter applied")
         results = collection.query(query_embeddings=query_embedding, n_results=k)
-    print(f"Retrieved chunks: {results['documents'][0]}")  # Debug retrieved data
+    print(f"Retrieved chunks: {results['documents'][0]}")
     return results['documents'][0]
 
 prompt_template = """
@@ -65,43 +64,37 @@ def generate_response(question, product_filter=None):
     chunks = retrieve_chunks(question, product_filter)
     context = "\n".join(chunks)
     prompt = prompt_template.format(context=context, question=question)
-    print(f"Prompt generated: {prompt[:100]}...")  # Debug prompt
+    print(f"Prompt generated: {prompt[:100]}...")
     try:
         response = llm(prompt)
-        print(f"Full response: {response}")  # Debug full response
+        print(f"Full response: {response}")
         return response, chunks[:2]
     except Exception as e:
         print(f"Error generating response: {e}")
         return f"Error generating response: {e}", chunks[:2]
-    # Test fallback response
     if not response or "I don’t have enough information" in response:
         print("Falling back to test response due to empty or default output")
         return "Test response: Please check data or model setup.", ["Test source"]
 
-# Gradio interface
-with gr.Blocks(title="CreditTrust Complaint Analyzer") as demo:
-    gr.Markdown("# CreditTrust Complaint Analyzer")
-    with gr.Row():
-        with gr.Column():
-            question_input = gr.Textbox(label="Enter your question", placeholder="e.g., Why are people unhappy with Credit Cards?")
-            submit_btn = gr.Button("Ask")
-            clear_btn = gr.Button("Clear")
-        with gr.Column():
-            output = gr.Textbox(label="Answer", interactive=False)
-            sources = gr.Textbox(label="Sources", interactive=False)
-    
-    submit_btn.click(
-        fn=generate_response,
-        inputs=[question_input, gr.State(value=None)],
-        outputs=[output, sources],
-        js="() => [document.querySelector('gradio-textbox input').value, null]",
-        api_name="submit"
-    )
+# Streamlit UI
+st.title("CreditTrust Complaint Analyzer")
+st.caption("Ask about customer complaints related to financial products.")
 
-    clear_btn.click(
-        fn=lambda: ("", []),
-        inputs=[],
-        outputs=[output, sources]
-    )
+if "messages" not in st.session_state:
+    st.session_state.messages = [{"role": "assistant", "content": "How can I assist you with complaint analysis today?"}]
 
-demo.launch()
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.write(message["content"])
+
+if prompt := st.chat_input("Enter your question"):
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.write(prompt)
+    with st.chat_message("assistant"):
+        with st.spinner("Analyzing..."):
+            response, sources = generate_response(prompt)
+        st.write(response)
+        st.session_state.messages.append({"role": "assistant", "content": response})
+    with st.expander("Sources"):
+        st.write("\n".join(sources) if sources else "No sources available.")
